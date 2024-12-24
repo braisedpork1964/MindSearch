@@ -25,7 +25,9 @@ from .mindsearch_prompt import (
 LLM = {}
 
 
-def init_agent(lang="cn", model_format="internlm_server", search_engine="BingSearch", use_async=False):
+def init_agent(
+    lang="cn", model_format="internlm_server", search_engine="BingSearch", use_async=False, identity_cognition=''
+):
     mode = "async" if use_async else "sync"
     llm = LLM.get(model_format, {}).get(mode)
     if llm is None:
@@ -59,7 +61,7 @@ def init_agent(lang="cn", model_format="internlm_server", search_engine="BingSea
     ]
     agent = (AsyncMindSearchAgent if use_async else MindSearchAgent)(
         llm=llm,
-        template=date,
+        template=identity_cognition + date,
         output_format=InterpreterParser(
             begin="<|action_start|><|interpreter|>",
             end="<|action_end|>",
@@ -68,7 +70,7 @@ def init_agent(lang="cn", model_format="internlm_server", search_engine="BingSea
         searcher_cfg=dict(
             llm=llm,
             plugins=plugins,
-            template=date,
+            template=identity_cognition + date,
             output_format=PluginParser(
                 begin="<|action_start|><|plugin|>",
                 end="<|action_end|>",
