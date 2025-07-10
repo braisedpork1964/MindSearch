@@ -117,15 +117,9 @@ class WebSearchGraph:
         parent_nodes = []
         for start_node, adj in self.adjacency_list.items():
             for neighbor in adj:
-                if (
-                    node_name == neighbor
-                    and start_node in self.nodes
-                    and "response" in self.nodes[start_node]
-                ):
+                if node_name == neighbor and start_node in self.nodes and "response" in self.nodes[start_node]:
                     parent_nodes.append(self.nodes[start_node])
-        parent_response = [
-            dict(question=node["content"], answer=node["response"]) for node in parent_nodes
-        ]
+        parent_response = [dict(question=node["content"], answer=node["response"]) for node in parent_nodes]
 
         if self.is_async:
 
@@ -142,6 +136,7 @@ class WebSearchGraph:
                         topic=self.nodes["root"]["content"],
                         history=parent_response,
                         session_id=session_id,
+                        spaces_between_special_tokens=False,
                     ):
                         self.nodes[node_name]["response"] = searcher_message.model_dump()
                         self.nodes[node_name]["memory"] = agent.state_dict(session_id=session_id)
@@ -152,9 +147,7 @@ class WebSearchGraph:
                     self.searcher_resp_queue.put((exc, None, None))
 
             self.future_to_query[
-                asyncio.run_coroutine_threadsafe(
-                    _async_search_node_stream(), random.choice(self._SEARCHER_LOOP)
-                )
+                asyncio.run_coroutine_threadsafe(_async_search_node_stream(), random.choice(self._SEARCHER_LOOP))
             ] = f"{node_name}-{node_content}"
             # self.future_to_query[
             #     self.executor.submit(asyncio.run, _async_search_node_stream())
@@ -183,9 +176,7 @@ class WebSearchGraph:
                 except Exception as exc:
                     self.searcher_resp_queue.put((exc, None, None))
 
-            self.future_to_query[
-                self.executor.submit(_search_node_stream)
-            ] = f"{node_name}-{node_content}"
+            self.future_to_query[self.executor.submit(_search_node_stream)] = f"{node_name}-{node_content}"
 
         self.n_active_tasks += 1
 
@@ -208,9 +199,7 @@ class WebSearchGraph:
             end_node (str): 结束节点名称
         """
         self.adjacency_list[start_node].append(dict(id=str(uuid.uuid4()), name=end_node, state=2))
-        self.searcher_resp_queue.put(
-            (start_node, self.nodes[start_node], self.adjacency_list[start_node])
-        )
+        self.searcher_resp_queue.put((start_node, self.nodes[start_node], self.adjacency_list[start_node]))
 
     def reset(self):
         self.nodes = {}
@@ -225,9 +214,7 @@ class WebSearchGraph:
             raise RuntimeError("Event loop cannot be launched as `is_async` is disabled")
 
         assert len(cls._SEARCHER_LOOP) == len(cls._SEARCHER_THREAD)
-        for i, (loop, thread) in enumerate(
-            zip(cls._SEARCHER_LOOP.copy(), cls._SEARCHER_THREAD.copy())
-        ):
+        for i, (loop, thread) in enumerate(zip(cls._SEARCHER_LOOP.copy(), cls._SEARCHER_THREAD.copy())):
             if not (loop.is_running() and thread.is_alive()):
                 cls._SEARCHER_LOOP.pop(i)
                 cls._SEARCHER_THREAD.pop(i)
@@ -260,11 +247,16 @@ class ExecutionAction(BaseAction):
             return text
 
         command = extract_code(command)
-        exec(command, global_dict, local_dict)
+        try:
+            exec(command, global_dict, local_dict)
+        except Exception as e:
+            print(f"Error executing command: {e}")
+            return [], {}, {}
 
         # 匹配所有 graph.node 中的内容
-        node_list = re.findall(r"graph.node\((.*?)\)", command)
-        graph: WebSearchGraph = local_dict["graph"]
+        graph: WebSearchGraph = local_dict.get("graph")
+        if not isinstance(graph, WebSearchGraph):
+            return [], {}, {}
         while graph.n_active_tasks:
             while not graph.searcher_resp_queue.empty():
                 node_name, _, _ = graph.searcher_resp_queue.get(timeout=60)
@@ -277,22 +269,14 @@ class ExecutionAction(BaseAction):
                     for neighbors in graph.adjacency_list.values():
                         for neighbor in neighbors:
                             # state  1进行中，2未开始，3已结束
-                            if not (
-                                neighbor["name"] in graph.nodes
-                                and "response" in graph.nodes[neighbor["name"]]
-                            ):
+                            if not (neighbor["name"] in graph.nodes and "response" in graph.nodes[neighbor["name"]]):
                                 neighbor["state"] = 2
-                            elif (
-                                graph.nodes[neighbor["name"]]["response"]["stream_state"]
-                                == AgentStatusCode.END
-                            ):
+                            elif graph.nodes[neighbor["name"]]["response"]["stream_state"] == AgentStatusCode.END:
                                 neighbor["state"] = 3
                             else:
                                 neighbor["state"] = 1
                     if all(
-                        "response" in node
-                        for name, node in graph.nodes.items()
-                        if name not in ["root", "response"]
+                        "response" in node for name, node in graph.nodes.items() if name not in ["root", "response"]
                     ):
                         yield AgentMessage(
                             sender=self.name,
@@ -303,5 +287,13 @@ class ExecutionAction(BaseAction):
                             ),
                             stream_state=AgentStatusCode.STREAM_ING,
                         )
-        res = [graph.nodes[node.strip().strip('"').strip("'")] for node in node_list]
+        res = []
+        for name in re.findall(r"graph.node\((.*?)\)", command):
+            name = name.strip()
+            try:
+                name = eval(name, global_dict, local_dict)
+            except Exception as e:
+                print(f"Error parsing node name '{name}': {e}")
+                continue
+            res.append(name)
         return res, graph.nodes, graph.adjacency_list
